@@ -28,7 +28,7 @@
 
             src = ./.;
 
-            npmDepsHash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+            npmDepsHash = "sha256-+GRnNW9FBU5jzc7UB3CotJ0pxNfO5FaPcfuauPJUr8g=";
 
             # The build phase is not needed, we're just installing dependencies
             dontNpmBuild = true;
