@@ -38,7 +38,12 @@ function initDataFile(filePath) {
 function readData(filePath) {
   try {
     const data = fs.readFileSync(filePath, 'utf8');
-    return JSON.parse(data);
+    const parsed = JSON.parse(data);
+    // Ensure the data has the correct structure
+    if (!parsed.entries || !Array.isArray(parsed.entries)) {
+      return { entries: [] };
+    }
+    return parsed;
   } catch (error) {
     console.error('Error reading data file:', error);
     return { entries: [] };
@@ -908,7 +913,15 @@ app.post('/api/switch-db', (req, res) => {
   }
 
   req.session.currentDb = database;
-  res.json({ message: 'Database switched successfully' });
+
+  // Save session before responding
+  req.session.save((err) => {
+    if (err) {
+      console.error('Error saving session:', err);
+      return res.status(500).json({ error: 'Failed to save session' });
+    }
+    res.json({ message: 'Database switched successfully' });
+  });
 });
 
 // Create new database
@@ -933,8 +946,17 @@ app.post('/api/create-db', (req, res) => {
   try {
     initDataFile(dbPath);
     req.session.currentDb = filename;
-    res.json({ message: 'Database created successfully', database: filename });
+
+    // Save session before responding
+    req.session.save((err) => {
+      if (err) {
+        console.error('Error saving session:', err);
+        return res.status(500).json({ error: 'Failed to save session' });
+      }
+      res.json({ message: 'Database created successfully', database: filename });
+    });
   } catch (error) {
+    console.error('Error creating database:', error);
     res.status(500).json({ error: 'Failed to create database' });
   }
 });
@@ -967,11 +989,26 @@ app.post('/api/delete-db', (req, res) => {
     // If we deleted the current database, switch to another one
     if (database === currentDb) {
       const remainingDbs = listDataFiles();
-      req.session.currentDb = remainingDbs[0] || 'data.json';
+      if (remainingDbs.length === 0) {
+        // No databases left, create a default one
+        const defaultDb = 'data.json';
+        initDataFile(path.join(DATA_DIR, defaultDb));
+        req.session.currentDb = defaultDb;
+      } else {
+        req.session.currentDb = remainingDbs[0];
+      }
     }
 
-    res.json({ message: 'Database deleted successfully' });
+    // Save session before responding to ensure it's persisted
+    req.session.save((err) => {
+      if (err) {
+        console.error('Error saving session:', err);
+        return res.status(500).json({ error: 'Failed to save session' });
+      }
+      res.json({ message: 'Database deleted successfully' });
+    });
   } catch (error) {
+    console.error('Error deleting database:', error);
     res.status(500).json({ error: 'Failed to delete database' });
   }
 });
