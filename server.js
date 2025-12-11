@@ -1,31 +1,43 @@
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
+const session = require('express-session');
 
 const app = express();
 
 // Get port from CLI argument
 const port = process.argv[2] || 3000;
 
-// Data file path - configurable via environment variable
-// Defaults to current working directory, not __dirname (which would be read-only in nix store)
-const DATA_FILE = process.env.DATA_FILE || path.join(process.cwd(), 'data.json');
+// Data directory - configurable via environment variable
+const DATA_DIR = process.env.DATA_DIR || process.cwd();
 
 // Middleware
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+app.use(session({
+  secret: process.env.SESSION_SECRET || 'joan-flash-secret-key',
+  resave: false,
+  saveUninitialized: true,
+  cookie: { secure: false }
+}));
+
+// Get the current data file path for the session
+function getDataFilePath(req) {
+  const currentDb = req.session.currentDb || 'data.json';
+  return path.join(DATA_DIR, currentDb);
+}
 
 // Initialize data file if it doesn't exist
-function initDataFile() {
-  if (!fs.existsSync(DATA_FILE)) {
-    fs.writeFileSync(DATA_FILE, JSON.stringify({ entries: [] }, null, 2));
+function initDataFile(filePath) {
+  if (!fs.existsSync(filePath)) {
+    fs.writeFileSync(filePath, JSON.stringify({ entries: [] }, null, 2));
   }
 }
 
 // Read data from file
-function readData() {
+function readData(filePath) {
   try {
-    const data = fs.readFileSync(DATA_FILE, 'utf8');
+    const data = fs.readFileSync(filePath, 'utf8');
     return JSON.parse(data);
   } catch (error) {
     console.error('Error reading data file:', error);
@@ -34,14 +46,31 @@ function readData() {
 }
 
 // Write data to file
-function writeData(data) {
+function writeData(filePath, data) {
   try {
-    fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
+    fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
     return true;
   } catch (error) {
     console.error('Error writing data file:', error);
     return false;
   }
+}
+
+// List all data files
+function listDataFiles() {
+  try {
+    const files = fs.readdirSync(DATA_DIR);
+    return files.filter(file => file.endsWith('.json') && file !== 'package.json' && file !== 'package-lock.json');
+  } catch (error) {
+    console.error('Error listing data files:', error);
+    return [];
+  }
+}
+
+// Validate database name
+function isValidDbName(name) {
+  // Only allow alphanumeric, dash, underscore
+  return /^[a-zA-Z0-9_-]+$/.test(name);
 }
 
 // Calculate totals and percentages
@@ -81,8 +110,12 @@ function calculateStats(entries) {
 
 // Main page route
 app.get('/', (req, res) => {
-  const data = readData();
+  const dataFile = getDataFilePath(req);
+  initDataFile(dataFile);
+  const data = readData(dataFile);
   const stats = calculateStats(data.entries);
+  const currentDb = req.session.currentDb || 'data.json';
+  const availableDbs = listDataFiles();
 
   const html = `<!DOCTYPE html>
 <html lang="en">
@@ -219,6 +252,73 @@ app.get('/', (req, res) => {
       height: 400px;
     }
 
+    .database-controls {
+      background: #f8f9fa;
+      padding: 20px;
+      border-radius: 4px;
+      margin-bottom: 30px;
+      display: flex;
+      gap: 30px;
+      align-items: flex-end;
+      flex-wrap: wrap;
+    }
+
+    .db-selector, .db-creator {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+    }
+
+    .db-selector label {
+      margin-bottom: 0;
+    }
+
+    #dbSelect {
+      padding: 8px 12px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      font-size: 14px;
+      min-width: 200px;
+    }
+
+    #newDbName {
+      padding: 8px 12px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      font-size: 14px;
+      min-width: 200px;
+    }
+
+    .btn-danger {
+      background: #e74c3c;
+      color: white;
+      padding: 8px 16px;
+      border: none;
+      border-radius: 4px;
+      font-size: 14px;
+      cursor: pointer;
+      transition: background 0.3s;
+    }
+
+    .btn-danger:hover {
+      background: #c0392b;
+    }
+
+    #createDbBtn {
+      background: #27ae60;
+      color: white;
+      padding: 8px 16px;
+      border: none;
+      border-radius: 4px;
+      font-size: 14px;
+      cursor: pointer;
+      transition: background 0.3s;
+    }
+
+    #createDbBtn:hover {
+      background: #229954;
+    }
+
     @media (max-width: 768px) {
       .container {
         padding: 15px;
@@ -237,6 +337,20 @@ app.get('/', (req, res) => {
 <body>
   <div class="container">
     <h1>Study Time Tracker</h1>
+
+    <div class="database-controls">
+      <div class="db-selector">
+        <label for="dbSelect">Database:</label>
+        <select id="dbSelect">
+          ${availableDbs.map(db => `<option value="${db}" ${db === currentDb ? 'selected' : ''}>${db.replace('.json', '')}</option>`).join('')}
+        </select>
+        <button id="deleteDbBtn" class="btn-danger">Delete</button>
+      </div>
+      <div class="db-creator">
+        <input type="text" id="newDbName" placeholder="New database name">
+        <button id="createDbBtn">Create New</button>
+      </div>
+    </div>
 
     <div id="message" class="message"></div>
 
@@ -317,19 +431,98 @@ app.get('/', (req, res) => {
       </tbody>
     </table>
 
-    <h2>Running Totals Over Time</h2>
+    <h2>Daily Study Time</h2>
     <div class="chart-container">
-      <canvas id="studyChart"></canvas>
+      <canvas id="dailyChart"></canvas>
     </div>
 
-    <h2>Daily Averages Over Time</h2>
+    <h2>Running Totals Over Time</h2>
     <div class="chart-container">
-      <canvas id="averageChart"></canvas>
+      <canvas id="runningTotalChart"></canvas>
     </div>
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <script>
+    // Database selection
+    document.getElementById('dbSelect').addEventListener('change', async (e) => {
+      try {
+        const response = await fetch('/api/switch-db', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ database: e.target.value })
+        });
+
+        if (response.ok) {
+          window.location.reload();
+        } else {
+          alert('Error switching database');
+        }
+      } catch (error) {
+        alert('Error switching database: ' + error.message);
+      }
+    });
+
+    // Create new database
+    document.getElementById('createDbBtn').addEventListener('click', async () => {
+      const dbName = document.getElementById('newDbName').value.trim();
+      if (!dbName) {
+        alert('Please enter a database name');
+        return;
+      }
+
+      try {
+        const response = await fetch('/api/create-db', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: dbName })
+        });
+
+        const result = await response.json();
+
+        if (response.ok) {
+          window.location.reload();
+        } else {
+          alert(result.error || 'Error creating database');
+        }
+      } catch (error) {
+        alert('Error creating database: ' + error.message);
+      }
+    });
+
+    // Delete database
+    document.getElementById('deleteDbBtn').addEventListener('click', async () => {
+      const dbSelect = document.getElementById('dbSelect');
+      const dbName = dbSelect.value;
+
+      if (dbSelect.options.length <= 1) {
+        alert('Cannot delete the last database');
+        return;
+      }
+
+      if (!confirm(\`Are you sure you want to delete "\${dbName.replace('.json', '')}"? This cannot be undone.\`)) {
+        return;
+      }
+
+      try {
+        const response = await fetch('/api/delete-db', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ database: dbName })
+        });
+
+        const result = await response.json();
+
+        if (response.ok) {
+          window.location.reload();
+        } else {
+          alert(result.error || 'Error deleting database');
+        }
+      } catch (error) {
+        alert('Error deleting database: ' + error.message);
+      }
+    });
+
     // Form submission
     document.getElementById('studyForm').addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -373,8 +566,8 @@ app.get('/', (req, res) => {
       }
     });
 
-    // Load chart data
-    async function loadChart() {
+    // Load daily totals chart
+    async function loadDailyChart() {
       try {
         const response = await fetch('/api/data');
         const data = await response.json();
@@ -383,12 +576,158 @@ app.get('/', (req, res) => {
           return;
         }
 
-        // Sort entries by date
-        const sortedEntries = data.entries.sort((a, b) =>
-          new Date(a.date) - new Date(b.date)
+        // Aggregate entries by date (sum all entries for the same date)
+        const dailyTotals = {};
+        data.entries.forEach(entry => {
+          if (!dailyTotals[entry.date]) {
+            dailyTotals[entry.date] = {
+              textbook: 0,
+              podcast: 0,
+              notes: 0,
+              flashcards: 0,
+              practice: 0
+            };
+          }
+          dailyTotals[entry.date].textbook += entry.textbook || 0;
+          dailyTotals[entry.date].podcast += entry.podcast || 0;
+          dailyTotals[entry.date].notes += entry.notes || 0;
+          dailyTotals[entry.date].flashcards += entry.flashcards || 0;
+          dailyTotals[entry.date].practice += entry.practice || 0;
+        });
+
+        // Sort dates
+        const dates = Object.keys(dailyTotals).sort((a, b) => new Date(a) - new Date(b));
+
+        // Create data arrays for each category
+        const textbookData = dates.map(date => dailyTotals[date].textbook);
+        const podcastData = dates.map(date => dailyTotals[date].podcast);
+        const notesData = dates.map(date => dailyTotals[date].notes);
+        const flashcardsData = dates.map(date => dailyTotals[date].flashcards);
+        const practiceData = dates.map(date => dailyTotals[date].practice);
+        const totalData = dates.map(date =>
+          dailyTotals[date].textbook + dailyTotals[date].podcast +
+          dailyTotals[date].notes + dailyTotals[date].flashcards +
+          dailyTotals[date].practice
         );
 
-        // Calculate running totals
+        const ctx = document.getElementById('dailyChart').getContext('2d');
+        new Chart(ctx, {
+          type: 'line',
+          data: {
+            labels: dates,
+            datasets: [
+              {
+                label: 'Total',
+                data: totalData,
+                borderColor: '#2c3e50',
+                backgroundColor: 'rgba(44, 62, 80, 0.1)',
+                borderWidth: 3,
+                tension: 0.1
+              },
+              {
+                label: 'Textbook',
+                data: textbookData,
+                borderColor: '#3498db',
+                borderWidth: 2,
+                tension: 0.1
+              },
+              {
+                label: 'Podcast',
+                data: podcastData,
+                borderColor: '#e74c3c',
+                borderWidth: 2,
+                tension: 0.1
+              },
+              {
+                label: 'Notes',
+                data: notesData,
+                borderColor: '#2ecc71',
+                borderWidth: 2,
+                tension: 0.1
+              },
+              {
+                label: 'Flashcards',
+                data: flashcardsData,
+                borderColor: '#f39c12',
+                borderWidth: 2,
+                tension: 0.1
+              },
+              {
+                label: 'Practice',
+                data: practiceData,
+                borderColor: '#9b59b6',
+                borderWidth: 2,
+                tension: 0.1
+              }
+            ]
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+              legend: {
+                position: 'bottom'
+              },
+              title: {
+                display: true,
+                text: 'Daily Study Time by Category'
+              }
+            },
+            scales: {
+              y: {
+                beginAtZero: true,
+                title: {
+                  display: true,
+                  text: 'Minutes'
+                }
+              },
+              x: {
+                title: {
+                  display: true,
+                  text: 'Date'
+                }
+              }
+            }
+          }
+        });
+      } catch (error) {
+        console.error('Error loading daily chart:', error);
+      }
+    }
+
+    // Load running totals chart
+    async function loadRunningTotalChart() {
+      try {
+        const response = await fetch('/api/data');
+        const data = await response.json();
+
+        if (data.entries.length === 0) {
+          return;
+        }
+
+        // Aggregate entries by date (sum all entries for the same date)
+        const dailyTotals = {};
+        data.entries.forEach(entry => {
+          if (!dailyTotals[entry.date]) {
+            dailyTotals[entry.date] = {
+              textbook: 0,
+              podcast: 0,
+              notes: 0,
+              flashcards: 0,
+              practice: 0
+            };
+          }
+          dailyTotals[entry.date].textbook += entry.textbook || 0;
+          dailyTotals[entry.date].podcast += entry.podcast || 0;
+          dailyTotals[entry.date].notes += entry.notes || 0;
+          dailyTotals[entry.date].flashcards += entry.flashcards || 0;
+          dailyTotals[entry.date].practice += entry.practice || 0;
+        });
+
+        // Sort dates
+        const dates = Object.keys(dailyTotals).sort((a, b) => new Date(a) - new Date(b));
+
+        // Calculate running totals (cumulative sum by day)
         let runningTotals = {
           textbook: [],
           podcast: [],
@@ -404,12 +743,14 @@ app.get('/', (req, res) => {
         let cumulativeFlashcards = 0;
         let cumulativePractice = 0;
 
-        sortedEntries.forEach(entry => {
-          cumulativeTextbook += entry.textbook || 0;
-          cumulativePodcast += entry.podcast || 0;
-          cumulativeNotes += entry.notes || 0;
-          cumulativeFlashcards += entry.flashcards || 0;
-          cumulativePractice += entry.practice || 0;
+        dates.forEach((date) => {
+          const dayData = dailyTotals[date];
+
+          cumulativeTextbook += dayData.textbook;
+          cumulativePodcast += dayData.podcast;
+          cumulativeNotes += dayData.notes;
+          cumulativeFlashcards += dayData.flashcards;
+          cumulativePractice += dayData.practice;
 
           runningTotals.textbook.push(cumulativeTextbook);
           runningTotals.podcast.push(cumulativePodcast);
@@ -422,13 +763,11 @@ app.get('/', (req, res) => {
           );
         });
 
-        const labels = sortedEntries.map(entry => entry.date);
-
-        const ctx = document.getElementById('studyChart').getContext('2d');
+        const ctx = document.getElementById('runningTotalChart').getContext('2d');
         new Chart(ctx, {
           type: 'line',
           data: {
-            labels: labels,
+            labels: dates,
             datasets: [
               {
                 label: 'Total',
@@ -484,7 +823,7 @@ app.get('/', (req, res) => {
               },
               title: {
                 display: true,
-                text: 'Running Total Minutes by Category'
+                text: 'Cumulative Study Time by Category'
               }
             },
             scales: {
@@ -492,7 +831,7 @@ app.get('/', (req, res) => {
                 beginAtZero: true,
                 title: {
                   display: true,
-                  text: 'Minutes'
+                  text: 'Total Minutes'
                 }
               },
               x: {
@@ -505,170 +844,12 @@ app.get('/', (req, res) => {
           }
         });
       } catch (error) {
-        console.error('Error loading chart:', error);
+        console.error('Error loading running total chart:', error);
       }
     }
 
-    // Load average chart data
-    async function loadAverageChart() {
-      try {
-        const response = await fetch('/api/data');
-        const data = await response.json();
-
-        if (data.entries.length === 0) {
-          return;
-        }
-
-        // Aggregate entries by date (sum all entries for the same date)
-        const dailyTotals = {};
-        data.entries.forEach(entry => {
-          if (!dailyTotals[entry.date]) {
-            dailyTotals[entry.date] = {
-              textbook: 0,
-              podcast: 0,
-              notes: 0,
-              flashcards: 0,
-              practice: 0
-            };
-          }
-          dailyTotals[entry.date].textbook += entry.textbook || 0;
-          dailyTotals[entry.date].podcast += entry.podcast || 0;
-          dailyTotals[entry.date].notes += entry.notes || 0;
-          dailyTotals[entry.date].flashcards += entry.flashcards || 0;
-          dailyTotals[entry.date].practice += entry.practice || 0;
-        });
-
-        // Sort dates and create array of daily totals
-        const dates = Object.keys(dailyTotals).sort((a, b) => new Date(a) - new Date(b));
-
-        // Calculate running averages (cumulative total / number of unique days)
-        let runningAverages = {
-          textbook: [],
-          podcast: [],
-          notes: [],
-          flashcards: [],
-          practice: [],
-          total: []
-        };
-
-        let cumulativeTextbook = 0;
-        let cumulativePodcast = 0;
-        let cumulativeNotes = 0;
-        let cumulativeFlashcards = 0;
-        let cumulativePractice = 0;
-
-        dates.forEach((date, index) => {
-          const dayCount = index + 1;
-          const dayData = dailyTotals[date];
-
-          cumulativeTextbook += dayData.textbook;
-          cumulativePodcast += dayData.podcast;
-          cumulativeNotes += dayData.notes;
-          cumulativeFlashcards += dayData.flashcards;
-          cumulativePractice += dayData.practice;
-
-          runningAverages.textbook.push((cumulativeTextbook / dayCount).toFixed(1));
-          runningAverages.podcast.push((cumulativePodcast / dayCount).toFixed(1));
-          runningAverages.notes.push((cumulativeNotes / dayCount).toFixed(1));
-          runningAverages.flashcards.push((cumulativeFlashcards / dayCount).toFixed(1));
-          runningAverages.practice.push((cumulativePractice / dayCount).toFixed(1));
-
-          const totalAverage = (
-            (cumulativeTextbook + cumulativePodcast + cumulativeNotes +
-            cumulativeFlashcards + cumulativePractice) / dayCount
-          ).toFixed(1);
-          runningAverages.total.push(totalAverage);
-        });
-
-        const labels = dates;
-
-        const ctx = document.getElementById('averageChart').getContext('2d');
-        new Chart(ctx, {
-          type: 'line',
-          data: {
-            labels: labels,
-            datasets: [
-              {
-                label: 'Total',
-                data: runningAverages.total,
-                borderColor: '#2c3e50',
-                backgroundColor: 'rgba(44, 62, 80, 0.1)',
-                borderWidth: 3,
-                tension: 0.1
-              },
-              {
-                label: 'Textbook',
-                data: runningAverages.textbook,
-                borderColor: '#3498db',
-                borderWidth: 2,
-                tension: 0.1
-              },
-              {
-                label: 'Podcast',
-                data: runningAverages.podcast,
-                borderColor: '#e74c3c',
-                borderWidth: 2,
-                tension: 0.1
-              },
-              {
-                label: 'Notes',
-                data: runningAverages.notes,
-                borderColor: '#2ecc71',
-                borderWidth: 2,
-                tension: 0.1
-              },
-              {
-                label: 'Flashcards',
-                data: runningAverages.flashcards,
-                borderColor: '#f39c12',
-                borderWidth: 2,
-                tension: 0.1
-              },
-              {
-                label: 'Practice',
-                data: runningAverages.practice,
-                borderColor: '#9b59b6',
-                borderWidth: 2,
-                tension: 0.1
-              }
-            ]
-          },
-          options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            plugins: {
-              legend: {
-                position: 'bottom'
-              },
-              title: {
-                display: true,
-                text: 'Daily Average Minutes by Category'
-              }
-            },
-            scales: {
-              y: {
-                beginAtZero: true,
-                title: {
-                  display: true,
-                  text: 'Minutes per Day (Average)'
-                }
-              },
-              x: {
-                title: {
-                  display: true,
-                  text: 'Date'
-                }
-              }
-            }
-          }
-        });
-      } catch (error) {
-        console.error('Error loading average chart:', error);
-      }
-    }
-
-    loadChart();
-    loadAverageChart();
+    loadDailyChart();
+    loadRunningTotalChart();
   </script>
 </body>
 </html>`;
@@ -695,10 +876,11 @@ app.post('/submit', (req, res) => {
     timestamp: new Date().toISOString()
   };
 
-  const data = readData();
+  const dataFile = getDataFilePath(req);
+  const data = readData(dataFile);
   data.entries.push(entry);
 
-  if (writeData(data)) {
+  if (writeData(dataFile, data)) {
     res.json({ message: 'Study time recorded successfully!', entry });
   } else {
     res.status(500).json({ error: 'Failed to save data' });
@@ -707,14 +889,98 @@ app.post('/submit', (req, res) => {
 
 // API endpoint for chart data
 app.get('/api/data', (req, res) => {
-  const data = readData();
+  const dataFile = getDataFilePath(req);
+  const data = readData(dataFile);
   res.json(data);
 });
 
+// Switch database
+app.post('/api/switch-db', (req, res) => {
+  const { database } = req.body;
+
+  if (!database || !database.endsWith('.json')) {
+    return res.status(400).json({ error: 'Invalid database name' });
+  }
+
+  const dbPath = path.join(DATA_DIR, database);
+  if (!fs.existsSync(dbPath)) {
+    return res.status(404).json({ error: 'Database not found' });
+  }
+
+  req.session.currentDb = database;
+  res.json({ message: 'Database switched successfully' });
+});
+
+// Create new database
+app.post('/api/create-db', (req, res) => {
+  const { name } = req.body;
+
+  if (!name) {
+    return res.status(400).json({ error: 'Database name is required' });
+  }
+
+  if (!isValidDbName(name)) {
+    return res.status(400).json({ error: 'Invalid database name. Use only letters, numbers, dashes, and underscores.' });
+  }
+
+  const filename = name.endsWith('.json') ? name : `${name}.json`;
+  const dbPath = path.join(DATA_DIR, filename);
+
+  if (fs.existsSync(dbPath)) {
+    return res.status(400).json({ error: 'Database already exists' });
+  }
+
+  try {
+    initDataFile(dbPath);
+    req.session.currentDb = filename;
+    res.json({ message: 'Database created successfully', database: filename });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to create database' });
+  }
+});
+
+// Delete database
+app.post('/api/delete-db', (req, res) => {
+  const { database } = req.body;
+
+  if (!database || !database.endsWith('.json')) {
+    return res.status(400).json({ error: 'Invalid database name' });
+  }
+
+  const dbPath = path.join(DATA_DIR, database);
+
+  if (!fs.existsSync(dbPath)) {
+    return res.status(404).json({ error: 'Database not found' });
+  }
+
+  // Check if we're deleting the current database
+  const currentDb = req.session.currentDb || 'data.json';
+  const allDbs = listDataFiles();
+
+  if (allDbs.length <= 1) {
+    return res.status(400).json({ error: 'Cannot delete the last database' });
+  }
+
+  try {
+    fs.unlinkSync(dbPath);
+
+    // If we deleted the current database, switch to another one
+    if (database === currentDb) {
+      const remainingDbs = listDataFiles();
+      req.session.currentDb = remainingDbs[0] || 'data.json';
+    }
+
+    res.json({ message: 'Database deleted successfully' });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to delete database' });
+  }
+});
+
 // Initialize and start server
-initDataFile();
+const defaultDataFile = path.join(DATA_DIR, 'data.json');
+initDataFile(defaultDataFile);
 
 app.listen(port, () => {
   console.log(`Study Time Tracker running on http://localhost:${port}`);
-  console.log(`Data file: ${DATA_FILE}`);
+  console.log(`Data directory: ${DATA_DIR}`);
 });

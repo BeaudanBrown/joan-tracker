@@ -28,7 +28,7 @@
 
             src = ./.;
 
-            npmDepsHash = "sha256-sjDyIlQ9diX95nIQyC+Ql0heaETd/Gf3mmDRk/EkBqg=";
+            npmDepsHash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
 
             # The build phase is not needed, we're just installing dependencies
             dontNpmBuild = true;
@@ -127,7 +127,7 @@
 
                 # Environment variables
                 Environment = [
-                  "DATA_FILE=${cfg.dataDir}/data.json"
+                  "DATA_DIR=${cfg.dataDir}"
                   "NODE_ENV=production"
                 ];
               };
