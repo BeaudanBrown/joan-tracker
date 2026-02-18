@@ -85,7 +85,7 @@ function calculateStats(entries) {
     podcast: 0,
     notes: 0,
     flashcards: 0,
-    practice: 0
+    practice: 0,
     inperson: 0,
     lecture: 0
   };
